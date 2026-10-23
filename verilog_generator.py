@@ -15,8 +15,18 @@ def generate_verilog(terms, form, module_name="boolean_function",
     if form not in ("sop", "pos"):
         raise ValueError("Form must be 'sop' or 'pos'")
 
+    # using 16 bit bus to make mapping to board easier
+    INPUT_WIDTH = 16
+
     # extract input variables from the parsed expression
     variables = get_variables(terms)
+
+    # map the first 16 variables to physical FPGA switches
+    # any additional variables are permanently assigned logic 0
+    variable_map = {
+        variable: f"inputs[{index}]" if index < INPUT_WIDTH else "1'b0"
+        for index, variable in enumerate(variables)
+    }
 
     # list of strings that will form the Verilog source code
     lines = []
@@ -41,13 +51,16 @@ def generate_verilog(terms, form, module_name="boolean_function",
 
         gate_count += 1
 
-    # generate module declaration
-    ports = [f"input wire {v}" for v in variables]
-    ports.append("output wire Z")
+    # include a comment describing the variable-to-switch mapping
+    lines.append("// Boolean variable mapping:")
+    for variable, signal in variable_map.items():
+        lines.append(f"// {variable} -> {signal}")
+    lines.append("")
 
     # add lines for module header, port declarations, newline
     lines.append(f"module {module_name} (")
-    lines.append("    " + ",\n    ".join(ports))
+    lines.append(f"    input wire [{INPUT_WIDTH-1}:0] inputs,")
+    lines.append("    output wire Z")
     lines.append(");")
     lines.append("")
 
@@ -80,9 +93,13 @@ def generate_verilog(terms, form, module_name="boolean_function",
 
         lines.append("")
 
-        # generate NOT gates for complemented variables
+        # generate NOT gates using bus inputs
         for variable in sorted(complemented):
-            add_gate("not", f"not_{variable}", [variable])
+            add_gate(
+                "not",
+                f"not_{variable}",
+                [variable_map[variable]]
+            )
 
         if complemented:
             lines.append("")
@@ -93,23 +110,31 @@ def generate_verilog(terms, form, module_name="boolean_function",
         term_gate = "and" if form == "sop" else "or"
         final_gate = "or" if form == "sop" else "and"
 
-        # generate one gate for each parsed term
+        # generate a gate for each product/sum term
         for index, term in enumerate(terms):
-
-            inputs = []
+            gate_inputs = []
 
             for variable, positive in term:
-                # complemented variables use their NOT wires.
-                signal = variable if positive else f"not_{variable}"
-                inputs.append(signal)
 
-            # a single literal does not require AND/OR logic
-            # use a buffer to connect it to the term wire
-            if len(inputs) == 1:
-                add_gate("buf", f"term_{index}", inputs)
+                if variable == "CONST":
+                    # translate boolean constants into verilog literals
+                    signal = "1'b1" if positive else "1'b0"
 
+                elif positive:
+                    # uncomplemented variable uses its bus bit
+                    signal = variable_map[variable]
+
+                else:
+                    # complemented variable uses its NOT gate output
+                    signal = f"not_{variable}"
+
+                gate_inputs.append(signal)
+
+            # single-literal terms only need a buffer
+            if len(gate_inputs) == 1:
+                add_gate("buf", f"term_{index}", gate_inputs)
             else:
-                add_gate(term_gate, f"term_{index}", inputs)
+                add_gate(term_gate, f"term_{index}", gate_inputs)
 
         lines.append("")
 
@@ -119,9 +144,9 @@ def generate_verilog(terms, form, module_name="boolean_function",
         ]
 
         if len(term_outputs) == 1:
-            add_gate("buf", "F", term_outputs)
+            add_gate("buf", "Z", term_outputs)
         else:
-            add_gate(final_gate, "F", term_outputs)
+            add_gate(final_gate, "Z", term_outputs)
 
     lines.append("")
     lines.append("endmodule")
