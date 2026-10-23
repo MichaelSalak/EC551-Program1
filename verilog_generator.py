@@ -54,11 +54,11 @@ def generate_verilog(terms, form, module_name="boolean_function",
     # handle constant functions before generating gates
     if terms == [[("CONST", True)]]:
         lines.append("    supply1 const_high;")
-        add_gate("buf", "F", ["const_high"])
+        add_gate("buf", "Z", ["const_high"])
 
     elif terms == [[("CONST", False)]]:
         lines.append("    supply0 const_low;")
-        add_gate("buf", "F", ["const_low"])
+        add_gate("buf", "Z", ["const_low"])
 
     else:
         # find all variables that appear complemented
