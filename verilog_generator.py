@@ -1,70 +1,76 @@
 # create structural verilog file from boolean expression
-# suports SOP and POS input formats
+# supports SOP and POS input formats
 
 from parser import get_variables
 
-# Generate structural Verilog from a parsed SOP/POS expression.
-#
-#    Parameters:
-#        terms: Parsed list of terms from parser.py
-#        form: "sop" or "pos"
-#        module_name: Name of generated Verilog module
-#        output_file: Destination .v file
+# 16 bit input bus -> maps straight onto the board's 16 switches
+INPUT_WIDTH = 16
+
+
+# generate structural verilog from parsed SOP/POS terms
+#    terms:       term list in parser.py format
+#    form:        "sop" or "pos"
+#    module_name: name of generated module
+#    output_file: .v file to write
+#    variables:   full input list (optional)
+#                 pass it so a variable dropped by minimization doesn't shift the switches
+# Ex: terms for A'C + AB', variables [A, B, C]
+#    A -> inputs[0], B -> inputs[1], C -> inputs[2]
+#    not g0(not_A, inputs[0]);
+#    not g1(not_B, inputs[1]);
+#    and g2(term_0, not_A, inputs[2]);
+#    and g3(term_1, inputs[0], not_B);
+#    or g4(Z, term_0, term_1);
 def generate_verilog(terms, form, module_name="boolean_function",
-                     output_file="output.v"):
-    if form not in ("sop", "pos"):
+                     output_file="output.v", variables=None):
+    if form != "sop" and form != "pos":
         raise ValueError("Form must be 'sop' or 'pos'")
 
-    # using 16 bit bus to make mapping to board easier
-    INPUT_WIDTH = 16
+    # input variables, from the terms if no list given
+    if variables is None:
+        variables = get_variables(terms)
 
-    # extract input variables from the parsed expression
-    variables = get_variables(terms)
+    # 1st 16 variables -> switches, any extra tied to 0
+    # Ex: {"A": "inputs[0]", "B": "inputs[1]"}
+    variable_map = {}
+    for index in range(len(variables)):
+        if index < INPUT_WIDTH:
+            variable_map[variables[index]] = f"inputs[{index}]"
+        else:
+            variable_map[variables[index]] = "1'b0"
 
-    # map the first 16 variables to physical FPGA switches
-    # any additional variables are permanently assigned logic 0
-    variable_map = {
-        variable: f"inputs[{index}]" if index < INPUT_WIDTH else "1'b0"
-        for index, variable in enumerate(variables)
-    }
-
-    # list of strings that will form the Verilog source code
+    # lines of the verilog source
     lines = []
 
-    # unique counter for generated gate instance names
+    # unique number for each gate name
     gate_count = 0
 
-    # Add a structural gate instantiation.
-    #
-    #   Example:
-    #       add_gate("and", "term_0", ["A", "B"])
-    #
-    #   Produces:
-    #       and g0(term_0, A, B);
+    # add 1 gate instance
+    #   Ex: add_gate("and", "term_0", ["A", "B"])
+    #   --> and g0(term_0, A, B);
     def add_gate(gate_type, output, inputs):
-        # ensure global gate count updates
+        # gate_count lives outside this function -> nonlocal to change it
         nonlocal gate_count
 
-
-        signals = ", ".join([output] + inputs)  
+        signals = ", ".join([output] + inputs)
         lines.append(f"    {gate_type} g{gate_count}({signals});")
 
-        gate_count += 1
+        gate_count = gate_count + 1
 
-    # include a comment describing the variable-to-switch mapping
+    # comment showing variable -> switch mapping
     lines.append("// Boolean variable mapping:")
-    for variable, signal in variable_map.items():
-        lines.append(f"// {variable} -> {signal}")
+    for variable in variables:
+        lines.append(f"// {variable} -> {variable_map[variable]}")
     lines.append("")
 
-    # add lines for module header, port declarations, newline
+    # module header + ports
     lines.append(f"module {module_name} (")
-    lines.append(f"    input wire [{INPUT_WIDTH-1}:0] inputs,")
+    lines.append(f"    input wire [{INPUT_WIDTH - 1}:0] inputs,")
     lines.append("    output wire Z")
     lines.append(");")
     lines.append("")
 
-    # handle constant functions before generating gates
+    # constant functions, no logic gates needed
     if terms == [[("CONST", True)]]:
         lines.append("    supply1 const_high;")
         add_gate("buf", "Z", ["const_high"])
@@ -74,63 +80,64 @@ def generate_verilog(terms, form, module_name="boolean_function",
         add_gate("buf", "Z", ["const_low"])
 
     else:
-        # find all variables that appear complemented
-        # using a set prevents duplicate NOT gates
-        complemented = {
-            variable
-            for term in terms
-            for variable, positive in term
-            if not positive
-        }
+        # variables that show up complemented, 1 NOT gate each
+        complemented = []
+        for term in terms:
+            for variable, positive in term:
+                if not positive and variable != "CONST" and variable not in complemented:
+                    complemented.append(variable)
+        complemented.sort()
 
-        # generate intermediate wires for complemented inputs
-        for variable in sorted(complemented):
+        # wires for NOT outputs
+        for variable in complemented:
             lines.append(f"    wire not_{variable};")
 
-        # generate one wire for each product/sum term
+        # 1 wire per product/sum term
         for index in range(len(terms)):
             lines.append(f"    wire term_{index};")
 
         lines.append("")
 
-        # generate NOT gates using bus inputs
-        for variable in sorted(complemented):
-            add_gate(
-                "not",
-                f"not_{variable}",
-                [variable_map[variable]]
-            )
+        # NOT gates on the bus inputs
+        for variable in complemented:
+            add_gate("not", f"not_{variable}", [variable_map[variable]])
 
-        if complemented:
+        if len(complemented) > 0:
             lines.append("")
 
-        # select gate types based on the expression form
-        # SOP: AND within terms, OR between terms
-        # POS: OR within clauses, AND between clauses
-        term_gate = "and" if form == "sop" else "or"
-        final_gate = "or" if form == "sop" else "and"
+        # gate types by form
+        # SOP: AND inside terms, OR between terms
+        # POS: OR inside clauses, AND between clauses
+        if form == "sop":
+            term_gate = "and"
+            final_gate = "or"
+        else:
+            term_gate = "or"
+            final_gate = "and"
 
-        # generate a gate for each product/sum term
-        for index, term in enumerate(terms):
+        # 1 gate per product/sum term
+        for index in range(len(terms)):
             gate_inputs = []
 
-            for variable, positive in term:
-
+            for variable, positive in terms[index]:
                 if variable == "CONST":
-                    # translate boolean constants into verilog literals
-                    signal = "1'b1" if positive else "1'b0"
+                    # constants -> verilog literals
+                    if positive:
+                        signal = "1'b1"
+                    else:
+                        signal = "1'b0"
 
                 elif positive:
-                    # uncomplemented variable uses its bus bit
+                    # plain variable -> its bus bit
                     signal = variable_map[variable]
 
                 else:
-                    # complemented variable uses its NOT gate output
+                    # complemented -> NOT gate output
                     signal = f"not_{variable}"
 
                 gate_inputs.append(signal)
 
-            # single-literal terms only need a buffer
+            # 1 literal -> just a buffer
             if len(gate_inputs) == 1:
                 add_gate("buf", f"term_{index}", gate_inputs)
             else:
@@ -138,10 +145,10 @@ def generate_verilog(terms, form, module_name="boolean_function",
 
         lines.append("")
 
-        # combine the term outputs into the final function
-        term_outputs = [
-            f"term_{index}" for index in range(len(terms))
-        ]
+        # combine terms into output Z
+        term_outputs = []
+        for index in range(len(terms)):
+            term_outputs.append(f"term_{index}")
 
         if len(term_outputs) == 1:
             add_gate("buf", "Z", term_outputs)
@@ -151,7 +158,7 @@ def generate_verilog(terms, form, module_name="boolean_function",
     lines.append("")
     lines.append("endmodule")
 
-    # join the source lines into a single string
+    # lines -> 1 string
     verilog_source = "\n".join(lines) + "\n"
 
     # write to file

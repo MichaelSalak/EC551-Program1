@@ -1,0 +1,2 @@
+# 3-input majority vote
+MAJ = AB + AC + BC;

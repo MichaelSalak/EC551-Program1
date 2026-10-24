@@ -1,0 +1,2 @@
+# textbook cyclic function: 6 prime implicants, 0 essential
+F = A'B'C' + A'B'C + A'BC + ABC + ABC' + AB'C';

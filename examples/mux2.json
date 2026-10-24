@@ -1,0 +1,12 @@
+{
+  "name": "mux2",
+  "description": "2:1 multiplexer Y = S'A + SB (classic static-1 hazard when S changes)",
+  "inputs":  ["S", "A", "B"],
+  "outputs": ["Y"],
+  "gates": [
+    {"name": "s_n", "type": "NOT", "inputs": ["S"]},
+    {"name": "p0",  "type": "AND", "inputs": ["s_n", "A"]},
+    {"name": "p1",  "type": "AND", "inputs": ["S", "B"]},
+    {"name": "Y",   "type": "OR",  "inputs": ["p0", "p1"]}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "full_adder",
+  "description": "1-bit full adder: S = A xor B xor C, COUT = majority(A, B, C)",
+  "inputs":  ["A", "B", "C"],
+  "outputs": ["S", "COUT"],
+  "gates": [
+    {"name": "x1",   "type": "XOR", "inputs": ["A", "B"]},
+    {"name": "S",    "type": "XOR", "inputs": ["x1", "C"]},
+    {"name": "a1",   "type": "AND", "inputs": ["A", "B"]},
+    {"name": "a2",   "type": "AND", "inputs": ["x1", "C"]},
+    {"name": "COUT", "type": "OR",  "inputs": ["a1", "a2"]}
+  ]
+}

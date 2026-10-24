@@ -1,23 +1,80 @@
 # EQN style parser
+#
+# input -> truth table
+# 2 input types:
+#   1. SOP / POS expression
+#      Ex: AB' + A'C      or      (A+B)(A'+C)
+#   2. combinational circuit (gate graph) in a .json file
+#
+# expression syntax:
+#   variables : single letters A-Z / a-z (case-sensitive, "a" != "A")
+#   NOT       : apostrophe after variable      A'
+#   AND       : side by side, '*' or '&'       AB, A*B, A&B
+#   OR        : '+' or '|'                     A+B, A|B
+#   constants : 0 and 1                        1, A+0, (A+1)(B)
+#   whitespace ignored
 
 import re
-import argparse
-from itertools import product
+import json
 
-# convert boolean literal into a tuple containing its name and polarity (complemented or not)
+
+# regex pieces for SOP + POS parsers
+#   [A-Za-z]'?  : 1 letter + optional apostrophe
+#   |[01]       : or constant 0 / 1
+LITERAL = r"[A-Za-z]'?|[01]"
+AND_OP = r"[*&]?"       # optional AND symbol between literals
+OR_OPS = r"[+|]"        # either OR symbol
+
+# full product term: 1 literal, then any # of (optional AND + literal)
+# (?: ... ) = grouping, like parentheses in math
+# Ex: matches "AB'", "A*B'", "A&BC"      rejects "A**B", "*A", "A$B", "A''"
+PRODUCT_TERM = "(?:" + LITERAL + ")(?:" + AND_OP + "(?:" + LITERAL + "))*"
+
+# 1 POS factor: "( ... )" sum or bare literal
+# Ex: "(A+B')" or "C"
+POS_FACTOR = r"\([^()]*\)|" + LITERAL
+
+# full POS expression: factors joined by nothing, '*' or '&'
+# Ex: matches "(A+B)(A'+C)", "(A+B)*C"      rejects "(A)+(B)", "(A+B"
+POS_EXPRESSION = "(?:" + POS_FACTOR + ")(?:" + AND_OP + "(?:" + POS_FACTOR + "))*"
+
+
+# index -> bit string, 1st variable = MSB
 # Ex:
-# "A" --> ("A", True)
+# to_bits(5, 3) --> "101"
+# to_bits(1, 2) --> "01"
+def to_bits(index, n):
+    bits = ""
+    for position in range(n):
+        # 1st position = highest bit -> shift n-1, then n-2, ...
+        shift = n - 1 - position
+        if ((index >> shift) & 1) == 1:
+            bits = bits + "1"
+        else:
+            bits = bits + "0"
+    return bits
+
+
+# literal string -> (name, polarity)
+# Ex:
+# "A"  --> ("A", True)
 # "B'" --> ("B", False)
+# "1"  --> ("CONST", True)
+# "0"  --> ("CONST", False)
 def parse_literal(token):
-    # check whether string matches the format of:
-    # [A-Za-z] : exactly one uppercase or lowercase letter
-    # '? : an optional apostrophe (0 or 1 occurrences)
-    if not re.fullmatch(r"[A-Za-z]'?", token):
-        raise ValueError(f"Invalid literal: {token}")
+    # must be exactly 1 literal
+    if not re.fullmatch(LITERAL, token):
+        raise ValueError(f"Invalid literal: '{token}'")
+
+    # constants: value goes in polarity slot
+    if token == "1":
+        return "CONST", True
+    if token == "0":
+        return "CONST", False
 
     variable = token[0]     # variable name
 
-    # boolean value determining whether variable is positive or negated
+    # True = plain, False = complemented
     positive = not token.endswith("'")
 
     return variable, positive
@@ -31,42 +88,42 @@ def parse_literal(token):
 #   [("A", False), ("C", True)]
 # ]
 def parse_sop(expression):
-    # remove all whitespace from input
+    # remove whitespace
     expression = re.sub(r"\s+", "", expression)
 
-    # handle 0 and 1 values
-    if expression in ("0", "1"):
-        return [[("CONST", expression == "1")]]
+    if expression == "":
+        raise ValueError("Empty expression")
 
-    # split the expression into product terms (strings) at each OR operator
-    terms = expression.split("+")
+    if "(" in expression or ")" in expression:
+        raise ValueError("Parentheses are not allowed in SOP form (Ex: write AB+C)")
+
+    # split at each OR
+    # Ex: "AB'+A'C" --> ["AB'", "A'C"]
+    terms = re.split(OR_OPS, expression)
 
     result = []
 
     for term in terms:
-        # malformed input
-        if not term:
-            raise ValueError("Empty product term")
+        # empty term = doubled / dangling OR, Ex: "A++B", "A+"
+        if term == "":
+            raise ValueError("Empty product term (check for doubled or dangling '+')")
 
-        # parse '*' and '&' symbols; make sure symbol is between literals
-        if (
-            term.startswith(("*", "&"))
-            or term.endswith(("*", "&"))
-        ):
-            raise ValueError(f"Invalid AND syntax: {term}")
+        # catch stray chars + misplaced AND symbols
+        if not re.fullmatch(PRODUCT_TERM, term):
+            raise ValueError(f"Invalid product term: '{term}'")
 
-        # remove symbols
-        term = term.replace("*", "").replace("&", "")
+        # pull out literals
+        # Ex: "A*B'" --> ["A", "B'"]
+        literals = re.findall(LITERAL, term)
 
-        # extract literals from product term
-        literals = re.findall(r"[A-Za-z]'?", term)
+        # literals -> tuples
+        # Ex: ["A", "B'"] --> [("A", True), ("B", False)]
+        parsed_term = []
+        for literal in literals:
+            parsed_term.append(parse_literal(literal))
 
-        # convert each literal into a (variable, polarity) tuple
-        # Ex:
-        # ["A", "B'"] --> [("A", True), ("B", False)]
-        parsed_term = [parse_literal(lit) for lit in literals]
+        result.append(parsed_term)
 
-        result.append(parsed_term) 
     return result
 
 
@@ -78,58 +135,69 @@ def parse_sop(expression):
 #   [("A", False), ("C", True)]
 # ]
 def parse_pos(expression):
-    # remove all whitespace from input
+    # remove whitespace
     expression = re.sub(r"\s+", "", expression)
 
-    # handle 0 and 1 values
-    if expression in ("0", "1"):
-        return [[("CONST", expression == "1")]]
+    if expression == "":
+        raise ValueError("Empty expression")
 
-    # remove symbols if present
-    expression = expression.replace("*", "").replace("&", "")
+    # whole string = sum terms joined by nothing, '*' or '&'
+    if not re.fullmatch(POS_EXPRESSION, expression):
+        raise ValueError(
+            "Invalid POS syntax: expected sum terms like (A+B)(A'+C) "
+            "(if you meant SOP, remove the parentheses: Ex: AB+C)"
+        )
 
-    # parse each sum:
-    # '(' + ... + ')'
-    # does not support nested parentheses
-    # Ex: "(A+B)(A'+C)" -> ["A+B", "A'+C"]
-    groups = re.findall(r"\(([^()]*)\)", expression)
-
-    if not groups:
-        raise ValueError("POS must contain parenthesized sum terms")
+    # split into factors, bare literal = 1-literal sum term
+    # no nested parentheses
+    # Ex: "(A+B)(A'+C)D" --> ["(A+B)", "(A'+C)", "D"]
+    factors = re.findall(POS_FACTOR, expression)
 
     result = []
 
-    for group in groups:
-        # no empty parenthesis
-        if not group:
-            raise ValueError("Empty sum term")
+    for factor in factors:
+        # strip parentheses
+        # Ex: "(A+B)" --> "A+B"
+        if factor.startswith("("):
+            group = factor[1:-1]
+        else:
+            group = factor
 
-        # split by OR operators (+, |)
-        literals = re.split(r"[+|]", group)
+        # no empty parentheses
+        if group == "":
+            raise ValueError("Empty sum term '()'")
 
-        # consecutive OR operators create empty literals: delete them
-        # Ex: "A++B" -> ["A", "", "B"]
-        if any(not lit for lit in literals):
-            raise ValueError(f"Invalid POS clause: ({group})")
+        # split at ORs
+        # Ex: "A+B'" --> ["A", "B'"]
+        literals = re.split(OR_OPS, group)
 
-        # convert each literal into a (variable, polarity) tuple
-        parsed_group = [parse_literal(lit) for lit in literals]
+        # literals -> tuples
+        parsed_group = []
+        for literal in literals:
+            # double OR -> empty literal, Ex: "A++B" --> ["A", "", "B"]
+            if literal == "":
+                raise ValueError(f"Invalid POS clause: ({group})")
+            parsed_group.append(parse_literal(literal))
 
         result.append(parsed_group)
+
     return result
 
 
-# parse as either SOP or POS
+# parse as SOP or POS
 # form:
-#   "sop": force SOP parsing
-#   "pos": force POS parsing
-#   "auto": detect form based on parentheses
+#   "sop": force SOP
+#   "pos": force POS
+#   "auto": pick based on parentheses
 def parse_expression(expression, form="auto"):
     expression = expression.strip()
 
-    # assumes SOP has no parenthesis
+    # assumes SOP has no parentheses
     if form == "auto":
-        form = "pos" if "(" in expression else "sop"
+        if "(" in expression:
+            form = "pos"
+        else:
+            form = "sop"
 
     if form == "sop":
         return form, parse_sop(expression)
@@ -140,138 +208,295 @@ def parse_expression(expression, form="auto"):
     raise ValueError("Form must be sop, pos, or auto")
 
 
-# return list of unique variables in expression
-# Ex: AB + A'C -> ["A", "B", "C"]
+# unique variables, sorted
+# Ex: AB + A'C --> ["A", "B", "C"]
 def get_variables(terms):
-    # set automatically eliminates duplicate entries
-    variables = set()
+    variables = []
 
     for term in terms:
-        for variable, _ in term:
+        for variable, positive in term:
+            # skip constants + duplicates
+            if variable != "CONST" and variable not in variables:
+                variables.append(variable)
 
-            # do not add constants
-            if variable != "CONST":
-                variables.add(variable)
-
-    return sorted(variables)
+    variables.sort()
+    return variables
 
 
-# evaluate parsed expression
+# value of 1 literal for given inputs
+# Ex:
+# Literal: ("A", False)
+# Input: A = 1
+# Result: False (A' = 0)
+def literal_value(literal, values):
+    variable, positive = literal
+
+    # constants: polarity slot = value
+    if variable == "CONST":
+        return positive
+
+    value = values[variable] == 1
+
+    if positive:
+        return value
+    else:
+        return not value
+
+
+# evaluate parsed expression for 1 input combo
+# Ex: AB + A'C w/ {"A": 0, "B": 1, "C": 1} --> True (A'C = 1)
 def evaluate(terms, form, values):
-    if terms == [[("CONST", True)]]:
-        return True
-
-    if terms == [[("CONST", False)]]:
+    if form == "sop":
+        # OR of ANDs: true if any term has all literals true
+        for term in terms:
+            term_is_true = True
+            for literal in term:
+                if not literal_value(literal, values):
+                    term_is_true = False
+                    break
+            if term_is_true:
+                return True
         return False
 
-    # evaluate one literal
-    # Ex: 
-    # Literal: ("A", False)
-    # Input: A = 1
-    # Result: False because A' = 0
-    def literal_value(literal):
-        variable, positive = literal
-
-        value = bool(values[variable])
-
-        return value if positive else not value
-
-    if form == "sop":
-        # Ex:
-        # AB + A'C
-        # (A AND B) OR ((NOT A) AND C)
-        return any(
-            all(literal_value(lit) for lit in term)
-            for term in terms
-        )
-
     if form == "pos":
-        # Ex:
-        # (A+B)(A'+C)
-        # (A OR B) AND ((NOT A) OR C)
-        return all(
-            any(literal_value(lit) for lit in term)
-            for term in terms
-        )
+        # AND of ORs: false if any term has all literals false
+        for term in terms:
+            term_is_true = False
+            for literal in term:
+                if literal_value(literal, values):
+                    term_is_true = True
+                    break
+            if not term_is_true:
+                return False
+        return True
 
     raise ValueError(f"Unknown form: {form}")
 
 
-# generate list of variables, list of tuples, on set, off set
-# print these + truth table
-def generate_truth_table(terms, form):
+# evaluate every input combo
+# order: optional variable order from file (1st = MSB), default alphabetical
+# returns:
+#   variables : ["A", "B", "C"]
+#   rows      : [("000", 0), ("001", 1), ...]   (input bits, output) per row
+#   on_set    : rows where F = 1                 Ex: [1, 3, 4, 5]
+#   off_set   : rows where F = 0                 Ex: [0, 2, 6, 7]
+def generate_truth_table(terms, form, order=None):
     variables = get_variables(terms)
 
+    # use file's order, but every variable has to be in it
+    if order is not None:
+        for variable in variables:
+            if variable not in order:
+                raise ValueError(f"Variable order is missing: {variable}")
+        variables = list(order)
+
+    n = len(variables)
     rows = []
     on_set = []
     off_set = []
 
-    # perform cartesian product of input to get all combinations
-    # 2^n combinations (acceptable for simple circuits)
-    for index, bits in enumerate(
-        product((0, 1), repeat=len(variables))
-    ):
-        # create a dictionary with variable : value pairs
+    # 2^n rows (fine for small circuits)
+    # row # = input bits as binary = minterm #
+    for index in range(2 ** n):
+        bits = to_bits(index, n)
+
+        # variable : value dict
         # Ex: {"A": 0, "B": 1, "C": 1}
-        values = dict(zip(variables, bits))
+        values = {}
+        for position in range(n):
+            values[variables[position]] = int(bits[position])
 
-        # evaluate the Boolean function for this assignment (0 or 1)
-        output = int(evaluate(terms, form, values))
+        # output for this row (0 or 1)
+        if evaluate(terms, form, values):
+            output = 1
+            on_set.append(index)
+        else:
+            output = 0
+            off_set.append(index)
 
-        # save the complete truth table row
+        # save row
         rows.append((bits, output))
 
-        if output:
+    return variables, rows, on_set, off_set
+
+GATE_TYPES = ["AND", "OR", "NAND", "NOR", "XOR", "XNOR", "NOT", "BUF"]
+
+
+# read circuit file + check it's valid
+# returns dict w/ "inputs", "outputs", "gates"
+def load_circuit(path):
+    try:
+        with open(path, encoding="utf-8") as file:
+            circuit = json.load(file)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path}: invalid JSON ({error})")
+
+    for key in ["inputs", "outputs", "gates"]:
+        if key not in circuit or not isinstance(circuit[key], list):
+            raise ValueError(f"Circuit needs an '{key}' list")
+
+    # inputs become variables -> single letters only
+    for name in circuit["inputs"]:
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z]", name):
+            raise ValueError(f"Circuit input '{name}' must be a single letter")
+
+    if len(circuit["outputs"]) == 0:
+        raise ValueError("Circuit needs at least one output")
+
+    # all signal names so far: inputs, constants, gate outputs
+    defined = list(circuit["inputs"]) + ["0", "1"]
+
+    for gate in circuit["gates"]:
+        if not isinstance(gate, dict):
+            raise ValueError("Each gate must be written as { ... }")
+
+        name = gate.get("name")
+        gate_type = gate.get("type")
+        gate_inputs = gate.get("inputs")
+
+        # gate names go into Verilog -> letters, digits, _ only
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(f"Gate name '{name}' must be letters, digits or _")
+        if name in defined:
+            raise ValueError(f"Signal '{name}' is defined twice")
+        if gate_type not in GATE_TYPES:
+            raise ValueError(f"Gate '{name}' has unknown type '{gate_type}'")
+        if not isinstance(gate_inputs, list):
+            raise ValueError(f"Gate '{name}' needs an 'inputs' list")
+
+        # NOT / BUF: 1 input, everything else: 2+
+        if gate_type == "NOT" or gate_type == "BUF":
+            if len(gate_inputs) != 1:
+                raise ValueError(f"{gate_type} gate '{name}' must have exactly 1 input")
+        elif len(gate_inputs) < 2:
+            raise ValueError(f"{gate_type} gate '{name}' must have at least 2 inputs")
+
+        defined.append(name)
+
+    # every wire has to come from a real signal
+    for gate in circuit["gates"]:
+        for signal in gate["inputs"]:
+            if signal not in defined:
+                raise ValueError(f"Gate '{gate['name']}' uses undefined signal '{signal}'")
+
+    for name in circuit["outputs"]:
+        if name not in defined:
+            raise ValueError(f"Output '{name}' is not driven by any gate or input")
+
+    # simulate once -> errors out if there's a feedback loop
+    all_zero = {}
+    for name in circuit["inputs"]:
+        all_zero[name] = 0
+    simulate_circuit(circuit, all_zero)
+
+    return circuit
+
+
+# 1 gate's output from its input values (0/1)
+# Ex: gate_value("NAND", [1, 1]) --> 0
+def gate_value(gate_type, inputs):
+    ones = 0
+    for value in inputs:
+        ones = ones + value
+
+    all_ones = ones == len(inputs)
+    any_ones = ones > 0
+    odd_ones = ones % 2 == 1      # 3+ input XOR = odd parity
+
+    if gate_type == "AND":
+        result = all_ones
+    elif gate_type == "OR":
+        result = any_ones
+    elif gate_type == "NAND":
+        result = not all_ones
+    elif gate_type == "NOR":
+        result = not any_ones
+    elif gate_type == "XOR":
+        result = odd_ones
+    elif gate_type == "XNOR":
+        result = not odd_ones
+    elif gate_type == "NOT":
+        result = inputs[0] == 0
+    else:  # BUF
+        result = inputs[0] == 1
+
+    if result:
+        return 1
+    return 0
+
+
+# every signal value for 1 input combo
+# gates in any order: each pass evaluates gates w/ all inputs known, repeat until done
+# pass w/ no progress -> gates waiting on each other = loop
+# Ex: full adder w/ {"A": 1, "B": 1, "C": 0}
+#     --> {"A": 1, "B": 1, "C": 0, "0": 0, "1": 1, "x1": 0, "S": 0, "a1": 1, "a2": 0, "COUT": 1}
+def simulate_circuit(circuit, input_values):
+    signals = dict(input_values)
+    signals["0"] = 0
+    signals["1"] = 1
+
+    remaining = list(circuit["gates"])
+
+    while len(remaining) > 0:
+        still_waiting = []
+
+        for gate in remaining:
+            # all inputs known yet?
+            ready = True
+            for signal in gate["inputs"]:
+                if signal not in signals:
+                    ready = False
+
+            if ready:
+                values = []
+                for signal in gate["inputs"]:
+                    values.append(signals[signal])
+                signals[gate["name"]] = gate_value(gate["type"], values)
+            else:
+                still_waiting.append(gate)
+
+        # nothing evaluated -> loop
+        if len(still_waiting) == len(remaining):
+            names = []
+            for gate in still_waiting:
+                names.append(gate["name"])
+            raise ValueError("Combinational loop (feedback) through gates: " + ", ".join(names))
+
+        remaining = still_waiting
+
+    return signals
+
+
+# truth table for 1 circuit output
+# returns same as generate_truth_table() + output name
+def circuit_truth_table(circuit, output=None):
+    # default = 1st output
+    if output is None:
+        output = circuit["outputs"][0]
+    if output not in circuit["outputs"]:
+        raise ValueError(f"Circuit has no output '{output}' (outputs: {', '.join(circuit['outputs'])})")
+
+    variables = list(circuit["inputs"])
+    n = len(variables)
+    rows = []
+    on_set = []
+    off_set = []
+
+    for index in range(2 ** n):
+        bits = to_bits(index, n)
+
+        # Ex: {"A": 0, "B": 1, "C": 1}
+        values = {}
+        for position in range(n):
+            values[variables[position]] = int(bits[position])
+
+        output_value = simulate_circuit(circuit, values)[output]
+
+        if output_value == 1:
             on_set.append(index)
         else:
             off_set.append(index)
 
-    return variables, rows, on_set, off_set
+        rows.append((bits, output_value))
 
-
-if __name__ == "__main__":
-    # argparse provides a command-line interface and automatically
-    # handles argument validation and help messages
-    cli = argparse.ArgumentParser(description="Direct SOP/POS Boolean parser")
-
-    # argument containing expression
-    cli.add_argument("expression", help="Boolean SOP or POS expression")
-
-    # optional argument specifying the input format
-    # Ex:
-    # python parser.py "(A+B)(A'+C)" --form pos
-    # if omitted, automatic detection is used
-    cli.add_argument(
-        "--form",
-        choices=["auto", "sop", "pos"],
-        default="auto",
-        help="Expression format (default: auto)"
-    )
-
-    # parse the command-line arguments.
-    args = cli.parse_args()
-
-    try:
-        # convert the input string into structured terms
-        form, terms = parse_expression(args.expression, args.form)
-
-        # evaluate the expression for every input combination
-        variables, rows, on_set, off_set = (generate_truth_table(terms, form))
-
-        print(f"Form: {form.upper()}")
-        print(f"Parsed terms: {terms}")
-        print(f"Variables: {variables}")
-
-        print("\nTruth Table:")
-        print(" ".join(variables), "| F")
-        print("-" * (2 * len(variables) + 4))
-
-        for bits, output in rows:
-            print(" ".join(map(str, bits)), "|", output)
-
-        print("\nON-set:", on_set)
-        print("OFF-set:", off_set)
-
-    except ValueError as exc:
-        # cli.error() prints the error message and exits with # a nonzero status code
-        cli.error(str(exc))
+    return variables, rows, on_set, off_set, output

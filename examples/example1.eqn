@@ -1,0 +1,13 @@
+# EC551 program 1 example input (SOP)
+# format:
+#   FORM    = sop | pos | auto   (optional, default auto)
+#   INORDER = variable order, 1st variable = MSB (optional)
+#   <name>  = boolean expression  (exactly 1 per file)
+# literals = single letters, ' complements, * or & for AND optional
+#
+# textbook 4 variable function: F = Σm(0, 1, 2, 6, 8, 9, 10)
+# expected min SOP: B'C' + B'D' + A'CD'
+
+FORM    = sop;
+INORDER = A B C D;
+F       = A'B'C' + B'CD' + A'BCD' + AB'C';

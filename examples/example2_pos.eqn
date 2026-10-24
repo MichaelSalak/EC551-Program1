@@ -1,0 +1,7 @@
+# EC551 program 1 example input (POS)
+# 3-input majority function written as POS
+# expected ON-set: m(3, 5, 6, 7)
+
+FORM = pos;
+INORDER = A B C;
+MAJ = (A+B)(A+C)(B+C);

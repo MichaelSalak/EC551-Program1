@@ -1,0 +1,10 @@
+{
+  "name": "bad_loop",
+  "description": "INVALID on purpose: g1 and g2 feed each other (feedback loop)",
+  "inputs":  ["A", "B"],
+  "outputs": ["g2"],
+  "gates": [
+    {"name": "g1", "type": "AND", "inputs": ["A", "g2"]},
+    {"name": "g2", "type": "OR",  "inputs": ["g1", "B"]}
+  ]
+}

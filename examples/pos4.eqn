@@ -1,0 +1,2 @@
+# 4-variable POS input
+F = (A + B + C')(A' + D)(B' + C + D')(A + C + D);

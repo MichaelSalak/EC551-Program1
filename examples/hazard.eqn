@@ -1,0 +1,2 @@
+# classic static-1 hazard: needs consensus term BC
+F = AB + A'C;

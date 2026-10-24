@@ -1,0 +1,12 @@
+{
+  "name": "nand_xor",
+  "description": "XOR built only from NAND gates",
+  "inputs":  ["A", "B"],
+  "outputs": ["F"],
+  "gates": [
+    {"name": "n1", "type": "NAND", "inputs": ["A", "B"]},
+    {"name": "n2", "type": "NAND", "inputs": ["A", "n1"]},
+    {"name": "n3", "type": "NAND", "inputs": ["B", "n1"]},
+    {"name": "F",  "type": "NAND", "inputs": ["n2", "n3"]}
+  ]
+}
