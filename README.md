@@ -3,19 +3,19 @@
 
 ## Simple Project description
 
-This project is a small logic synthesis tool written in Python which recieves an input Boolean function, analyzes the function, minimizes it, and outputs the corresponding minmized function. It then translates that minimized boolean function into verilog cable of running on an FPGA.
+This project is a small logic synthesis tool written in Python which recieves an input 2-level Boolean function or graph-based digital combinational logic circuit (CLC), analyzes the function, minimizes it, and outputs the corresponding minmized function along with various other representations and performance metrics. It then translates that minimized boolean function into verilog capable of running on an FPGA.
 
 # 2 Ways for Input
 1. Boolean expression: sum-of-products (SOP) or product-of-sums (POS)
   form inputted via the command line
-2. Combinatinoal Logic Circuit: graph of gates (AND, OR, NAND, NOR, XOR, XNOR, NOT, BUF) and the wires between them, stored in a `.json` file.
+2. Combinational Logic Circuit: graph of gates (AND, OR, NAND, NOR, XOR, XNOR, NOT, BUF) and the wires between them, stored in a `.json` file.
 
 ## Build and run
 
 1. Install Python 3.8 or newer. No other packages are needed.
 2. Clone the repo and enter the folder:
    ```bash
-   git clone <repo-url>
+   git clone <https://github.com/MichaelSalak/EC551-Program1.git>
    cd EC551-Program1
    ```
 3. Run the engine on an expression, a `.eqn` file or a `.json` circuit:
